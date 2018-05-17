@@ -191,7 +191,9 @@ addStealExtension(function(loader) {
 	// places within steal, like the transpiler module used in the loader itself
 	loader.treeshaker = {
 		applyBabelPlugin: function applyBabelPlugin(load) {
-			return loader.import("babel").then(function(mod) {
+			var pluginLoader = loader.pluginLoader || loader;
+
+			return pluginLoader.import("babel").then(function(mod) {
 				var transpiler = mod.__useDefault ? mod.default : mod;
 				var babel = transpiler.Babel || transpiler.babel || transpiler;
 
