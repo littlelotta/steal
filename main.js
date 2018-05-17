@@ -925,7 +925,7 @@ addStealExtension(function(loader){
 	};
 });
 
-addStealExtension(function (loader) {
+addStealExtension(function(loader) {
 	function determineUsedExports(load) {
 		var loader = this;
 
@@ -936,13 +936,13 @@ addStealExtension(function (loader) {
 		newDeps.forEach(function(depName) {
 			var depLoad = loader.getModuleLoad(depName);
 			var specifier = loader.moduleSpecifierFromName(depLoad, load.name);
-			if(depLoad.metadata.format !== "es6") {
+			if (depLoad.metadata.format !== "es6") {
 				allUsed = true;
 				return;
 			}
 
 			var usedNames = depLoad.metadata.importNames[specifier] || [];
-			usedNames.forEach(function(name){
+			usedNames.forEach(function(name) {
 				usedExports.add(name);
 			});
 		});
@@ -962,11 +962,11 @@ addStealExtension(function (loader) {
 		var out = [];
 		var deps = this.getDependants(load.name);
 		var shakenParents = load.metadata.shakenParents;
-		if(!shakenParents) {
+		if (!shakenParents) {
 			out = deps;
 		} else {
-			for(var i = 0; i < deps.length; i++) {
-				if(shakenParents.indexOf(deps[i]) === -1) {
+			for (var i = 0; i < deps.length; i++) {
+				if (shakenParents.indexOf(deps[i]) === -1) {
 					out.push(deps[i]);
 				}
 			}
@@ -980,8 +980,11 @@ addStealExtension(function (loader) {
 	function getUsedExportsFromParent(load, parentName) {
 		var parentLoad = this.getModuleLoad(parentName);
 		var parentImportNames = parentLoad.metadata.importNames;
-		if(parentImportNames) {
-			var parentSpecifier = this.moduleSpecifierFromName(parentLoad, load.name);
+		if (parentImportNames) {
+			var parentSpecifier = this.moduleSpecifierFromName(
+				parentLoad,
+				load.name
+			);
 			var usedNames = parentImportNames[parentSpecifier];
 			return usedNames || [];
 		}
@@ -998,13 +1001,13 @@ addStealExtension(function (loader) {
 		// Given the parent's used exports, loop over and see if any are not
 		// within the usedExports set.
 		var hasNewExports = false;
-		for(var i = 0; i < usedExports.length; i++) {
-			if(!load.metadata.usedExports.has(usedExports[i])) {
+		for (var i = 0; i < usedExports.length; i++) {
+			if (!load.metadata.usedExports.has(usedExports[i])) {
 				hasNewExports = true;
 			}
 		}
 
-		if(hasNewExports) {
+		if (hasNewExports) {
 			this["delete"](load.name);
 			return loader.define(load.name, load.source, load);
 		}
@@ -1024,18 +1027,115 @@ addStealExtension(function (loader) {
 
 			// If this module is already marked as tree-shakable it means
 			// it has been loaded before. Determine if it needs to be reexecuted.
-			if(load && load.metadata.treeShakable) {
-				return reexecuteIfNecessary.call(loader, load, parentName)
-				.then(function(){
-					return name;
-				});
+			if (load && load.metadata.treeShakable) {
+				return reexecuteIfNecessary
+					.call(loader, load, parentName)
+					.then(function() {
+						return name;
+					});
 			}
 			return name;
 		});
+	};
+
+	function getImportSpecifierPositionsPlugin(load) {
+		load.metadata.importSpecifiers = Object.create(null);
+		load.metadata.importNames = Object.create(null);
+
+		return {
+			visitor: {
+				ImportDeclaration: function(path, state) {
+					var node = path.node;
+					var specifier = node.source.value;
+					var loc = node.source.loc;
+					load.metadata.importSpecifiers[specifier] = loc;
+					load.metadata.importNames[specifier] = (
+						node.specifiers || []
+					).map(function(spec) {
+						return spec.imported && spec.imported.name;
+					});
+				}
+			}
+		};
 	}
 
-	// determineUsedExports is used with a Babel tree-shaking plugin.
-	loader.determineUsedExports = determineUsedExports;
+	function treeShakePlugin(loader, load) {
+		var notShakable = {
+			exit: function(path, state) {
+				state.treeShakable = false;
+			}
+		};
+
+		var notShakeableVisitors = {
+			ImportDeclaration: notShakable,
+			FunctionDeclaration: notShakable,
+			VariableDeclaration: notShakable
+		};
+
+		return {
+			visitor: {
+				Program: {
+					enter: function(path) {
+						var state = {};
+						path.traverse(notShakeableVisitors, state);
+						load.metadata.treeShakable =
+							state.treeShakable !== false;
+					}
+				},
+
+				ExportNamedDeclaration: function(path, state) {
+					if (load.metadata.treeShakable) {
+						var usedResult = determineUsedExports.call(
+							loader,
+							load
+						);
+
+						var usedExports = usedResult.used;
+						var allUsed = usedResult.all;
+
+						if (!allUsed) {
+							path.get("specifiers").forEach(function(path) {
+								var name = path.get("exported.name").node;
+								if (
+									!usedExports.has(name) &&
+									name !== "__esModule"
+								) {
+									path.remove();
+								}
+							});
+
+							if (path.get("specifiers").length === 0) {
+								path.remove();
+							}
+						}
+					}
+				}
+			}
+		};
+	}
+
+	// Make treeshaker available on the loader so it can be used in other
+	// places within steal, like the transpiler module used in the loader itself
+	loader.treeshaker = {
+		applyBabelPlugin: function applyBabelPlugin(load) {
+			return loader.import("babel").then(function(mod) {
+				var transpiler = mod.__useDefault ? mod.default : mod;
+				var babel = transpiler.Babel || transpiler.babel || transpiler;
+
+				try {
+					return babel.transform(load.source, {
+						plugins: [
+							getImportSpecifierPositionsPlugin.bind(null, load),
+							treeShakePlugin.bind(null, loader, load)
+						]
+					}).code;
+				} catch (e) {
+					return Promise.reject(e);
+				}
+			});
+		},
+		babelPlugin: treeShakePlugin
+	};
 });
 
 addStealExtension(function applyTraceExtension(loader) {
@@ -1106,7 +1206,7 @@ addStealExtension(function applyTraceExtension(loader) {
 	};
 
 	function eachOf(obj, callback){
-		var name, val;
+		var name;
 		for(name in obj) {
 			callback(name, obj[name]);
 		}
@@ -1193,16 +1293,20 @@ addStealExtension(function applyTraceExtension(loader) {
 		return deps;
 	}
 
+	function isESModule(instantiateResult) {
+		return !instantiateResult;
+	}
+
 	var instantiate = loader.instantiate;
 	loader.instantiate = function(load){
 		this._traceData.loads[load.name] = load;
 		var loader = this;
 		var instantiatePromise = Promise.resolve(instantiate.apply(this, arguments));
 
-		function finalizeResult(result){
-			var preventExecution = loader.preventModuleExecution &&
-				!isAllowedToExecute.call(loader, load);
+		var preventExecution =
+			loader.preventModuleExecution && !isAllowedToExecute.call(loader, load);
 
+		function finalizeResult(result){
 			// deps either comes from the instantiate result, or if an
 			// es6 module it was found in the transpile hook.
 			var deps = result ? result.deps : load.metadata.deps;
@@ -1225,14 +1329,30 @@ addStealExtension(function applyTraceExtension(loader) {
 			});
 		}
 
-		return instantiatePromise.then(function(result){
-			// This must be es6
-			if(!result) {
-				var deps = getESDeps(load.source);
-				load.metadata.deps = deps;
-			}
-			return finalizeResult(result);
-		});
+		return instantiatePromise
+			.then(function(result) {
+				// run the treeshake plugin on ES modules during build phase
+				if (
+					isESModule(result) &&
+					preventExecution &&
+					loader.treeshaker &&
+					loader.transpiler === "babel"
+				) {
+					return loader.treeshaker.applyBabelPlugin(load)
+						.then(function(source) {
+							load.source = source;
+							return result;
+						});
+				}
+				return result;
+			})
+			.then(function(result) {
+				if (isESModule(result)) {
+					var deps = getESDeps(load.source);
+					load.metadata.deps = deps;
+				}
+				return finalizeResult(result);
+			});
 	};
 
 	var transpile = loader.transpile;

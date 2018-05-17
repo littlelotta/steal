@@ -66,7 +66,7 @@ addStealExtension(function applyTraceExtension(loader) {
 	};
 
 	function eachOf(obj, callback){
-		var name, val;
+		var name;
 		for(name in obj) {
 			callback(name, obj[name]);
 		}
@@ -153,16 +153,20 @@ addStealExtension(function applyTraceExtension(loader) {
 		return deps;
 	}
 
+	function isESModule(instantiateResult) {
+		return !instantiateResult;
+	}
+
 	var instantiate = loader.instantiate;
 	loader.instantiate = function(load){
 		this._traceData.loads[load.name] = load;
 		var loader = this;
 		var instantiatePromise = Promise.resolve(instantiate.apply(this, arguments));
 
-		function finalizeResult(result){
-			var preventExecution = loader.preventModuleExecution &&
-				!isAllowedToExecute.call(loader, load);
+		var preventExecution =
+			loader.preventModuleExecution && !isAllowedToExecute.call(loader, load);
 
+		function finalizeResult(result){
 			// deps either comes from the instantiate result, or if an
 			// es6 module it was found in the transpile hook.
 			var deps = result ? result.deps : load.metadata.deps;
@@ -185,14 +189,30 @@ addStealExtension(function applyTraceExtension(loader) {
 			});
 		}
 
-		return instantiatePromise.then(function(result){
-			// This must be es6
-			if(!result) {
-				var deps = getESDeps(load.source);
-				load.metadata.deps = deps;
-			}
-			return finalizeResult(result);
-		});
+		return instantiatePromise
+			.then(function(result) {
+				// run the treeshake plugin on ES modules during build phase
+				if (
+					isESModule(result) &&
+					preventExecution &&
+					loader.treeshaker &&
+					loader.transpiler === "babel"
+				) {
+					return loader.treeshaker.applyBabelPlugin(load)
+						.then(function(source) {
+							load.source = source;
+							return result;
+						});
+				}
+				return result;
+			})
+			.then(function(result) {
+				if (isESModule(result)) {
+					var deps = getESDeps(load.source);
+					load.metadata.deps = deps;
+				}
+				return finalizeResult(result);
+			});
 	};
 
 	var transpile = loader.transpile;

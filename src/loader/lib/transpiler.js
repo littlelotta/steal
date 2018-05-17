@@ -531,64 +531,13 @@
 		};
 	}
 
-	var notShakable = {
-		exit: function(path, state) {
-			state.treeShakable = false;
-		}
-	};
-
-	var notShakeableVisitors = {
-		ImportDeclaration: notShakable,
-		FunctionDeclaration: notShakable,
-		VariableDeclaration: notShakable
-	};
-
-	function treeShakePlugin(loader, load) {
-		if(typeof loader.determineUsedExports !== "function") {
-			return {};
-		}
-
-		return {
-			visitor: {
-				Program: {
-					enter: function(path){
-						var state = {};
-						path.traverse(notShakeableVisitors, state);
-						load.metadata.treeShakable = state.treeShakable !== false;
-					}
-				},
-
-				ExportNamedDeclaration: function(path, state) {
-					if(load.metadata.treeShakable) {
-						var usedResult = loader.determineUsedExports(load)
-
-						var usedExports = usedResult.used;
-						var allUsed = usedResult.all;
-
-						if(!allUsed) {
-							path.get("specifiers").forEach(function(path){
-								var name = path.get("exported.name").node;
-								if(!usedExports.has(name) && name !== "__esModule") {
-									path.remove();
-								}
-							});
-
-							if(path.get("specifiers").length === 0) {
-								path.remove();
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
 	function babelTranspile(load, babelMod) {
 		var babel = babelMod.Babel || babelMod.babel || babelMod;
 
-		var babelVersion = getBabelVersion(babel);
-		var options = getBabelOptions.call(this, load, babel);
 		var loader = this;
+		var babelVersion = getBabelVersion(babel);
+		var options = getBabelOptions.call(loader, load, babel);
+		var treeshaker = loader.treeshaker;
 
 		return Promise.all([
 			processBabelPlugins.call(this, babel, options),
@@ -601,8 +550,14 @@
 				options.plugins = [
 					getImportSpecifierPositionsPlugin.bind(null, load),
 					addESModuleFlagPlugin,
-					treeShakePlugin.bind(null, loader, load)
-				].concat(results[0]);
+					treeshaker ?
+						treeshaker.babelPlugin.bind(null, loader, load) :
+						null
+				]
+				.filter(function(x) {
+					return x != null;
+				})
+				.concat(results[0]);
 				options.presets = results[1];
 			}
 
